@@ -26,7 +26,6 @@ from .schemas import (
 )
 from .data_layer.document_processor import DocumentProcessor
 from .data_layer.chunker import TextChunker
-from .data_layer.embedding_service import EmbeddingService
 from .data_layer.vector_store import VectorStore
 from .data_layer.database import Database
 from .ai_engine.pipeline import ValidationPipeline
@@ -53,8 +52,10 @@ app.add_middleware(
 db = Database(db_path=settings.SQLITE_DB_PATH)
 doc_processor = DocumentProcessor()
 chunker = TextChunker(chunk_size=500, chunk_overlap=50)
-embedding_service = EmbeddingService(model_name=settings.EMBEDDING_MODEL)
-vector_store = VectorStore(persist_directory=settings.CHROMA_PERSIST_DIR)
+vector_store = VectorStore(
+    persist_directory=settings.CHROMA_PERSIST_DIR,
+    model_name=settings.EMBEDDING_MODEL,
+)
 
 # Initialize LLM client (optional)
 llm_client = None
@@ -71,7 +72,6 @@ if settings.LLM_API_KEY:
 
 pipeline = ValidationPipeline(
     vector_store=vector_store,
-    embedding_service=embedding_service,
     llm_client=llm_client,
 )
 
@@ -130,14 +130,10 @@ async def upload_document(file: UploadFile = File(...)):
         # Chunk text
         chunks = chunker.chunk_pages(pages, document_id)
 
-        # Generate embeddings
+        # Store in vector database (ChromaDB generates embeddings automatically)
         chunk_texts = [c["chunk_text"] for c in chunks]
-        embeddings = embedding_service.embed_batch(chunk_texts)
-
-        # Store in vector database
         vector_store.add_chunks(
             chunk_ids=[c["chunk_id"] for c in chunks],
-            embeddings=embeddings,
             documents=chunk_texts,
             metadatas=[
                 {"page_number": c["page_number"], "document_id": c["document_id"]}

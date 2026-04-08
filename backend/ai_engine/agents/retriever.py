@@ -8,17 +8,16 @@ class RetrievalAgent:
 
     Uses ONLY retrieved documents as evidence source.
     Returns top-k relevant chunks with page numbers.
+    ChromaDB handles embedding generation internally.
     """
 
-    def __init__(self, vector_store, embedding_service):
-        """Initialize with vector store and embedding service.
+    def __init__(self, vector_store):
+        """Initialize with vector store.
 
         Args:
             vector_store: VectorStore instance for similarity search.
-            embedding_service: EmbeddingService for claim embedding.
         """
         self.vector_store = vector_store
-        self.embedding_service = embedding_service
 
     def run(self, claims: list[dict], top_k: int = 5) -> dict:
         """Retrieve evidence for each claim.
@@ -37,9 +36,8 @@ class RetrievalAgent:
             claim_text = claim["claim_text"]
 
             try:
-                query_embedding = self.embedding_service.embed_text(claim_text)
                 evidence = self.vector_store.query(
-                    query_embedding=query_embedding,
+                    query_text=claim_text,
                     top_k=top_k,
                 )
                 evidence_map[claim_id] = evidence

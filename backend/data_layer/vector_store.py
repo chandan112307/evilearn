@@ -1,24 +1,32 @@
-"""Vector storage module using ChromaDB for semantic retrieval."""
+"""Vector storage module using ChromaDB for semantic retrieval.
+
+Uses ChromaDB's built-in SentenceTransformerEmbeddingFunction for embedding
+generation, so ChromaDB handles both storage and embedding natively.
+"""
 
 import chromadb
-from chromadb.config import Settings
+from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from typing import Optional
 
 
 class VectorStore:
-    """Manages vector storage and retrieval using ChromaDB."""
+    """Manages vector storage and retrieval using ChromaDB.
 
-    def __init__(self, persist_directory: str = "./chroma_db"):
-        """Initialize ChromaDB client.
+    ChromaDB handles embedding generation internally via
+    SentenceTransformerEmbeddingFunction (all-MiniLM-L6-v2).
+    """
+
+    def __init__(self, persist_directory: str = "./chroma_db", model_name: str = "all-MiniLM-L6-v2"):
+        """Initialize ChromaDB persistent client.
 
         Args:
             persist_directory: Directory for persistent storage.
+            model_name: Sentence transformer model for embeddings.
         """
-        self._client = chromadb.Client(Settings(
-            chroma_db_impl="duckdb+parquet",
-            persist_directory=persist_directory,
-            anonymized_telemetry=False,
-        ))
+        self._client = chromadb.PersistentClient(path=persist_directory)
+        self._embedding_function = SentenceTransformerEmbeddingFunction(
+            model_name=model_name,
+        )
         self._collection_name = "evilearn_documents"
         self._collection: Optional[chromadb.Collection] = None
 
@@ -29,41 +37,41 @@ class VectorStore:
             self._collection = self._client.get_or_create_collection(
                 name=self._collection_name,
                 metadata={"hnsw:space": "cosine"},
+                embedding_function=self._embedding_function,
             )
         return self._collection
 
     def add_chunks(
         self,
         chunk_ids: list[str],
-        embeddings: list[list[float]],
         documents: list[str],
         metadatas: list[dict],
     ) -> None:
-        """Store chunks with embeddings in ChromaDB.
+        """Store chunks in ChromaDB. Embeddings are generated automatically.
 
         Args:
             chunk_ids: Unique IDs for each chunk.
-            embeddings: Vector embeddings for each chunk.
             documents: Raw text of each chunk.
             metadatas: Metadata dicts (page_number, document_id) for each chunk.
         """
         self.collection.add(
             ids=chunk_ids,
-            embeddings=embeddings,
             documents=documents,
             metadatas=metadatas,
         )
 
     def query(
         self,
-        query_embedding: list[float],
+        query_text: str,
         top_k: int = 5,
         document_id: Optional[str] = None,
     ) -> list[dict]:
-        """Retrieve top-k similar chunks.
+        """Retrieve top-k similar chunks using text query.
+
+        ChromaDB handles embedding the query text internally.
 
         Args:
-            query_embedding: Query vector.
+            query_text: Claim text to search for.
             top_k: Number of results to return.
             document_id: Optional filter by document.
 
@@ -75,7 +83,7 @@ class VectorStore:
             where_filter = {"document_id": document_id}
 
         results = self.collection.query(
-            query_embeddings=[query_embedding],
+            query_texts=[query_text],
             n_results=top_k,
             where=where_filter,
             include=["documents", "metadatas", "distances"],
