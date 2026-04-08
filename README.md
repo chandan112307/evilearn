@@ -34,17 +34,19 @@ graph TB
     end
 
     subgraph "Layer 4 — Data & Knowledge Layer"
-        VEC[(ChromaDB<br/>Vector Store)]
+        VEC[(ChromaDB<br/>Vector Store<br/>storage only)]
         SQL[(SQLite<br/>Relational DB)]
         DP[Document Processor<br/>PyMuPDF]
+        EMB[EmbeddingService<br/>LLM API]
     end
 
     UI <-->|REST API| API
     API --> PL
     EA --> API
-    RA <--> VEC
+    RA <--> EMB
+    EMB <--> VEC
     API <--> SQL
-    API --> DP --> VEC
+    API --> DP --> EMB --> VEC
 ```
 
 | Layer | Responsibility | Technology |
@@ -52,7 +54,7 @@ graph TB
 | Frontend | Structured reasoning interface | React 19, Vite 8, Tailwind CSS 4 |
 | Backend API | Request routing, validation, orchestration | FastAPI, Uvicorn, Pydantic |
 | AI Engine | Deterministic multi-agent reasoning pipeline | LangGraph StateGraph |
-| Data Layer | Document processing, embedding, storage, retrieval | PyMuPDF, ChromaDB, SQLite |
+| Data Layer | Document processing, embedding, storage, retrieval | PyMuPDF, EmbeddingService (LLM API), ChromaDB, SQLite |
 
 ## Data Flow Diagrams
 
@@ -65,6 +67,7 @@ sequenceDiagram
     participant API as FastAPI
     participant DP as DocumentProcessor
     participant CH as TextChunker
+    participant ES as EmbeddingService
     participant VS as ChromaDB
     participant DB as SQLite
 
@@ -76,8 +79,11 @@ sequenceDiagram
     DP-->>API: List of {page_number, text}
     API->>CH: chunk_pages(pages, document_id)
     CH-->>API: List of chunks with IDs
-    API->>VS: add_chunks(ids, documents, metadatas)
-    Note over VS: ChromaDB generates embeddings<br/>via all-MiniLM-L6-v2
+    API->>ES: embed_texts(chunk_texts)
+    Note over ES: Embeddings generated via LLM API
+    ES-->>API: Pre-computed embedding vectors
+    API->>VS: add_chunks(ids, documents, metadatas, embeddings)
+    Note over VS: ChromaDB stores pre-computed<br/>embeddings — no auto-embedding
     API->>DB: Insert chunk records
     API->>DB: Update document status → ready
     API-->>FE: DocumentResponse
@@ -107,7 +113,8 @@ sequenceDiagram
     PIP->>PIP: Decompose into atomic claims (LLM or rules)
 
     Note over PIP: Stage 3 — Retriever
-    PIP->>VS: query(claim_text, top_k=5) per claim
+    PIP->>PIP: Generate query embedding via EmbeddingService
+    PIP->>VS: query(query_embedding, top_k=5) per claim
     VS-->>PIP: Evidence chunks with relevance scores
 
     Note over PIP: Stage 4 — Verifier
@@ -117,7 +124,8 @@ sequenceDiagram
     PIP->>PIP: Generate explanations (LLM or rules)
 
     PIP-->>API: Final results with claims, evidence, verdicts
-    API->>DB: Create session, store claims & results
+    API->>API: Validate output via ClaimResult BEFORE storage
+    API->>DB: Create session, store validated claims & results
     API-->>FE: ProcessInputResponse
     FE-->>U: Structured claim cards with evidence
 ```
@@ -205,7 +213,8 @@ Every verified claim returns this structure:
 | ASGI Server | Uvicorn | 0.24+ | Production server |
 | Validation | Pydantic | 2.5+ | Request/response schemas |
 | PDF Processing | PyMuPDF (fitz) | 1.23+ | Text extraction |
-| Vector Database | ChromaDB | 0.4+ | Embedding storage & retrieval |
+| Vector Database | ChromaDB | 0.4+ | Vector storage & similarity search (storage only) |
+| Embedding | EmbeddingService | — | Embedding generation via LLM API (OpenAI/Groq) |
 | Pipeline | LangGraph | 0.0.20+ | StateGraph orchestration |
 | Relational DB | SQLite | Built-in | Session, claims, feedback storage |
 | LLM Provider | Groq / OpenAI | — | Claim extraction & explanation |
@@ -226,9 +235,10 @@ cd backend
 pip install -r requirements.txt
 
 # Required environment variables
-export LLM_API_KEY="your-api-key"        # Groq or OpenAI API key
+export LLM_API_KEY="your-api-key"        # Groq or OpenAI API key (required for embeddings)
 export LLM_PROVIDER="groq"               # "groq" or "openai"
 export LLM_MODEL="llama3-8b-8192"        # LLM model name
+export EMBEDDING_MODEL="text-embedding-ada-002"  # Embedding model name
 
 # Optional environment variables
 export SQLITE_DB_PATH="./evilearn.db"
@@ -268,6 +278,9 @@ The frontend starts on `http://localhost:5173` and proxies `/api` requests to th
 4. **LLM usage is restricted.** Only the Claim Extractor and Explainer use LLM calls. Verification is purely algorithmic.
 5. **Fallback behavior is deterministic.** If the LLM is unavailable, rule-based extraction and explanation are used.
 6. **All sessions are audited.** Every input, claim, result, and feedback action is stored in SQLite.
+7. **Embeddings come ONLY from the LLM API.** ChromaDB stores vectors, it never generates them.
+8. **All data is strictly typed.** Pydantic models validate every claim before storage. No untyped dicts in core flow.
+9. **Output is validated before persistence.** Pipeline output is validated via Pydantic schemas BEFORE inserting into the database.
 
 ## Limitations
 
@@ -297,7 +310,8 @@ evilearn/
 │       ├── README.md                  # Data Layer documentation
 │       ├── document_processor.py      # PDF/text extraction
 │       ├── chunker.py                 # Text chunking
-│       ├── vector_store.py            # ChromaDB interface
+│       ├── embedding_service.py       # Embedding generation via LLM API
+│       ├── vector_store.py            # ChromaDB interface (storage only)
 │       └── database.py                # SQLite interface
 └── frontend/
     ├── README.md                      # Frontend documentation

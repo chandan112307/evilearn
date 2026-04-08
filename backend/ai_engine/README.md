@@ -47,18 +47,20 @@ The `PipelineState` TypedDict is the shared state flowing through all nodes:
 ```python
 class PipelineState(TypedDict):
     # Injected dependencies (set once, never mutated by nodes)
-    _vector_store: object       # ChromaDB VectorStore
-    _llm_client: object         # Groq / OpenAI client (or None)
+    _vector_store: object           # ChromaDB VectorStore (storage only)
+    _llm_client: object             # Groq / OpenAI client (or None)
+    _embedding_service: object      # EmbeddingService for query embeddings
 
     # Pipeline data (each field written by exactly one node)
-    raw_input: str              # Original user text
-    input_type: str             # Written by planner_node
-    pipeline_decision: str      # Written by planner_node
-    claims: list[dict]          # Written by claim_extractor_node
-    evidence_map: dict          # Written by retriever_node
-    verification_results: list[dict]  # Written by verifier_node
-    final_results: list[dict]   # Written by explainer_node
-    error: Optional[str]        # Error field
+    # All pipeline data is validated via Pydantic models before writing.
+    raw_input: str                              # Original user text
+    input_type: str                             # Written by planner_node
+    pipeline_decision: str                      # Written by planner_node
+    claims: list[dict]                          # Written by claim_extractor_node (ClaimItem)
+    evidence_map: dict                          # Written by retriever_node (EvidenceChunk)
+    verification_results: list[dict]            # Written by verifier_node (VerificationResult)
+    final_results: list[dict]                   # Written by explainer_node (FinalClaimResult)
+    error: Optional[str]                        # Error field
 ```
 
 ### State Discipline
@@ -67,6 +69,7 @@ Each node:
 - **Reads** only the fields it needs
 - **Writes** only its assigned fields
 - **Never** overwrites unrelated data
+- **Validates** all output via Pydantic models before writing (ClaimItem, EvidenceChunk, VerificationResult, FinalClaimResult)
 
 ## Pipeline State Flow
 
@@ -119,7 +122,7 @@ stateDiagram-v2
 | Property | Value |
 |----------|-------|
 | **Reads** | `raw_input`, `input_type`, `_llm_client` |
-| **Writes** | `claims` |
+| **Writes** | `claims` (validated via `ClaimItem` Pydantic model) |
 | **Uses LLM** | Yes (with fallback) |
 | **Deterministic** | Fallback only |
 
@@ -149,10 +152,15 @@ stateDiagram-v2
 
 | Property | Value |
 |----------|-------|
-| **Reads** | `claims`, `_vector_store` |
-| **Writes** | `evidence_map` |
-| **Uses LLM** | No |
+| **Reads** | `claims`, `_vector_store`, `_embedding_service` |
+| **Writes** | `evidence_map` (validated via `EvidenceChunk` Pydantic model) |
+| **Uses LLM** | No (but uses EmbeddingService for query embedding) |
 | **Deterministic** | Yes (given fixed embeddings) |
+
+**Embedding flow:**
+- Query embeddings are generated via `EmbeddingService` (LLM API), NOT by ChromaDB.
+- Pre-computed query embeddings are passed to `VectorStore.query(query_embedding=...)`.
+- ChromaDB performs similarity search only — it never generates embeddings.
 
 **Evidence object structure:**
 ```json
@@ -165,8 +173,9 @@ stateDiagram-v2
 ```
 
 **Rules:**
-- Queries ChromaDB once per claim using the claim text as the search query.
-- ChromaDB handles embedding the query text internally.
+- Generates a query embedding per claim via `_embedding_service.embed_query(claim_text)`.
+- Queries ChromaDB with the pre-computed embedding.
+- Each evidence chunk is validated via the `EvidenceChunk` Pydantic model.
 - If a query fails for any claim, that claim gets an empty evidence list `[]`.
 - Default `top_k=5` chunks per claim.
 
@@ -179,7 +188,7 @@ stateDiagram-v2
 | Property | Value |
 |----------|-------|
 | **Reads** | `claims`, `evidence_map` |
-| **Writes** | `verification_results` |
+| **Writes** | `verification_results` (validated via `VerificationResult` Pydantic model) |
 | **Uses LLM** | No |
 | **Deterministic** | Yes |
 
@@ -208,7 +217,7 @@ stateDiagram-v2
 | Property | Value |
 |----------|-------|
 | **Reads** | `verification_results`, `_llm_client` |
-| **Writes** | `final_results` |
+| **Writes** | `final_results` (validated via `FinalClaimResult` Pydantic model) |
 | **Uses LLM** | Yes (with fallback) |
 | **Deterministic** | Fallback only |
 
@@ -249,11 +258,11 @@ graph TB
 
     LLM[LLM Client<br/>Groq / OpenAI] -.->|used by| CE
     LLM -.->|used by| EN
-    VS[VectorStore<br/>ChromaDB] -->|queried by| RN
+    EMB[EmbeddingService<br/>LLM API] -.->|query embeddings| RN
+    VS[VectorStore<br/>ChromaDB<br/>storage only] -->|queried by| RN
 
     subgraph "No LLM Access"
         P
-        RN
         VN
     end
 ```
@@ -369,6 +378,26 @@ def build_validation_graph():
 | explainer_node | **Yes** | Natural language explanation | Template-based explanation |
 
 **Rationale:** Verification must be deterministic and reproducible. LLMs are only used where human-like language understanding (extraction) or generation (explanation) is required. The verification decision itself is always evidence-based.
+
+## Strict Typing & Validation
+
+All pipeline data is validated via Pydantic models at every stage:
+
+| Node | Output Model | Validation |
+|------|-------------|------------|
+| claim_extractor_node | `ClaimItem` | claim_id (UUID), claim_text (non-empty) |
+| retriever_node | `EvidenceChunk` | text_snippet, page_number, relevance_score |
+| verifier_node | `VerificationResult` | status ∈ {supported, weakly_supported, unsupported}, confidence ∈ [0.0, 1.0] |
+| explainer_node | `FinalClaimResult` | All of above + explanation |
+
+The `ValidationPipeline.execute()` performs a final validation pass — every claim in `final_results` is re-validated via `FinalClaimResult` before returning. Invalid data is rejected.
+
+## Embedding Architecture
+
+- **Embeddings are generated by `EmbeddingService`** (LLM API: OpenAI/Groq), NOT by ChromaDB.
+- **ChromaDB is used ONLY for storage and cosine similarity search.**
+- Query embeddings are generated in `retriever_node` via `_embedding_service.embed_query()`.
+- Document embeddings are generated during upload via `embedding_service.embed_texts()`.
 
 ## Limitations
 

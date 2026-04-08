@@ -12,8 +12,9 @@ The EviLearn backend is a FastAPI application that serves as the orchestration l
 |-----------|-----------|---------|
 | Web Framework | FastAPI | REST API with automatic OpenAPI docs |
 | ASGI Server | Uvicorn | Production-ready async server |
-| Validation | Pydantic v2 | Request/response schema enforcement |
+| Validation | Pydantic v2 | Strict request/response/pipeline schema enforcement |
 | File Upload | `python-multipart` | Multipart form data parsing |
+| Embeddings | EmbeddingService | Embedding generation via LLM API (OpenAI/Groq) |
 | LLM Client | Groq / OpenAI SDK | Optional LLM for claim extraction & explanation |
 
 ## Architecture
@@ -30,20 +31,23 @@ graph TB
         DB[Database<br/>SQLite]
         DP[DocumentProcessor<br/>PyMuPDF]
         CH[TextChunker]
-        VS[VectorStore<br/>ChromaDB]
+        ES[EmbeddingService<br/>LLM API]
+        VS[VectorStore<br/>ChromaDB — storage only]
         PIP[ValidationPipeline<br/>LangGraph]
         LLM[LLM Client<br/>Groq / OpenAI]
     end
 
     FE[Frontend<br/>React] <-->|REST API| MW
     MW --> EP
-    INIT --> DB & DP & CH & VS & PIP & LLM
+    INIT --> DB & DP & CH & ES & VS & PIP & LLM
     EP --> DB
     EP --> DP
     EP --> CH
+    EP --> ES
     EP --> VS
     EP --> PIP
     PIP --> LLM
+    PIP --> ES
 ```
 
 ## API Endpoints
@@ -91,9 +95,10 @@ graph TB
 3. Insert document record in SQLite (status: `processing`)
 4. Extract text via `DocumentProcessor`
 5. Chunk text via `TextChunker` (500 chars, 50 overlap)
-6. Store chunks in ChromaDB (embeddings auto-generated)
-7. Store chunks in SQLite
-8. Update document status to `ready`
+6. Generate embeddings via `EmbeddingService` (LLM API)
+7. Store chunks + pre-computed embeddings in ChromaDB
+8. Store chunks in SQLite
+9. Update document status to `ready`
 
 **Error responses:**
 | Code | Condition |
@@ -293,16 +298,18 @@ sequenceDiagram
     FastAPI->>DB: Check ready documents exist
     FastAPI->>Pipeline: pipeline.execute(input_text)
     Pipeline->>Graph: graph.invoke(initial_state)
-    Note over Graph: 5-stage sequential execution
+    Note over Graph: 5-stage sequential execution<br/>All data validated via Pydantic
     Graph-->>Pipeline: final_state
+    Pipeline->>Pipeline: Validate output via FinalClaimResult
     Pipeline-->>FastAPI: {input_type, claims[]}
+    FastAPI->>FastAPI: Validate via ClaimResult BEFORE storage
     FastAPI->>DB: create_session()
-    FastAPI->>DB: insert_claims()
-    FastAPI->>DB: insert_results()
+    FastAPI->>DB: insert_claims() (validated only)
+    FastAPI->>DB: insert_results() (validated only)
     FastAPI-->>Client: ProcessInputResponse
 ```
 
-## Request Validation (Pydantic Schemas)
+## Request & Output Validation (Pydantic Schemas)
 
 All request bodies are validated by Pydantic v2 models defined in `schemas.py`:
 
@@ -311,6 +318,17 @@ All request bodies are validated by Pydantic v2 models defined in `schemas.py`:
 | `ProcessInputRequest` | `input_text` | `min_length=1` |
 | `FeedbackRequest` | `claim_id`, `session_id`, `decision` | `decision` matches `^(accept\|reject)$` |
 | `EditClaimRequest` | `claim_id`, `session_id`, `new_claim_text` | `new_claim_text` has `min_length=1` |
+
+**Output validation (BEFORE storage):**
+
+| Schema | Fields | Validation |
+|--------|--------|------------|
+| `ClaimResult` | `claim_id`, `claim_text`, `status`, `confidence_score`, `evidence`, `explanation` | `status` ∈ {supported, weakly_supported, unsupported}, `confidence_score` ∈ [0.0, 1.0] |
+| `FinalClaimResult` | Same as ClaimResult | Pipeline-internal validation at every stage |
+| `HistoryClaimItem` | `claim_id`, `session_id`, `claim_text` | Fully typed, no loose dicts |
+| `HistoryFeedbackItem` | `feedback_id`, `claim_id`, `session_id`, `user_decision`, `created_at` | Fully typed |
+
+All pipeline output is validated via `ClaimResult` **before** being inserted into the database. If validation fails, the request is rejected with HTTP 500.
 
 Invalid requests receive a `422 Unprocessable Entity` response with Pydantic validation errors.
 
@@ -383,9 +401,10 @@ Default origins: `http://localhost:5173` (Vite dev server), `http://localhost:30
 |----------|---------|-------------|
 | `SQLITE_DB_PATH` | `./evilearn.db` | SQLite database file path |
 | `CHROMA_PERSIST_DIR` | `./chroma_db` | ChromaDB persistence directory |
-| `LLM_API_KEY` | `""` | API key for Groq or OpenAI |
+| `LLM_API_KEY` | `""` | API key for Groq or OpenAI (required for embeddings) |
 | `LLM_MODEL` | `llama3-8b-8192` | LLM model name |
 | `LLM_PROVIDER` | `groq` | `groq` or `openai` |
+| `EMBEDDING_MODEL` | `text-embedding-ada-002` | Embedding model name |
 | `TOP_K_RESULTS` | `5` | Number of evidence chunks to retrieve |
 | `MAX_FILE_SIZE_MB` | `50` | Maximum upload file size in MB |
 | `CORS_ORIGINS` | `http://localhost:5173,...` | Allowed CORS origins |
