@@ -5,6 +5,7 @@ import ResultsDisplay from './components/ResultsDisplay';
 import HistoryDashboard from './components/HistoryDashboard';
 import StressTestWorkspace from './components/StressTestWorkspace';
 import ThinkingSimulationWorkspace from './components/ThinkingSimulationWorkspace';
+import CognitiveLoadWorkspace from './components/CognitiveLoadWorkspace';
 
 function App() {
   const [activeTab, setActiveTab] = useState('workspace');
@@ -19,6 +20,7 @@ function App() {
   const tabs = [
     { id: 'workspace', label: 'Validation Workspace' },
     { id: 'thinking-sim', label: 'Thinking Simulator' },
+    { id: 'cognitive-load', label: 'Cognitive Load' },
     { id: 'stress-test', label: 'Stress Test' },
     { id: 'documents', label: 'Documents' },
     { id: 'history', label: 'History' },
@@ -45,6 +47,8 @@ function App() {
                         ? 'bg-purple-600 text-white'
                         : tab.id === 'thinking-sim'
                         ? 'bg-indigo-600 text-white'
+                        : tab.id === 'cognitive-load'
+                        ? 'bg-teal-600 text-white'
                         : 'bg-blue-600 text-white'
                       : 'text-gray-600 hover:bg-gray-100'
                   }`}
@@ -71,6 +75,8 @@ function App() {
         )}
 
         {activeTab === 'thinking-sim' && <ThinkingSimulationWorkspace />}
+
+        {activeTab === 'cognitive-load' && <CognitiveLoadWorkspace />}
 
         {activeTab === 'stress-test' && <StressTestWorkspace />}
 

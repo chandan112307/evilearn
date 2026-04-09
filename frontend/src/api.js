@@ -100,3 +100,19 @@ export async function simulateThinking(problem, studentAnswer = '') {
   }
   return res.json();
 }
+
+export async function optimizeCognitiveLoad(explanation, userId = 'default') {
+  const res = await fetch(`${API_BASE}/optimize-cognitive-load`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      explanation,
+      user_id: userId,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Cognitive load optimization failed');
+  }
+  return res.json();
+}

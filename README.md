@@ -287,6 +287,134 @@ curl -X POST http://localhost:8000/simulate-thinking \
 | State Management | LangGraph State (TypedDict) | Global shared state across all nodes |
 | Execution Style | Graph-based only | No sequential function chaining |
 
+## Cognitive Load Optimizer
+
+EviLearn includes a **Cognitive Load Optimizer** — a LangGraph-based **real-time reasoning flow regulator** that controls how explanations are presented to users, adapting structure and pacing to match individual cognitive capacity.
+
+### Feature Overview
+
+The Cognitive Load Optimizer does **NOT** change explanation content or correctness. It is a **presentation control layer** that:
+
+- **Analyzes explanation structure** (steps, concept transitions, abstraction levels)
+- **Tracks user cognitive state** dynamically across interactions (understanding, stability, learning speed)
+- **Computes cognitive load** from step density, concept gaps, and memory demand
+- **Adapts explanation presentation** in real-time (splitting, merging, adjusting abstraction)
+- **Runs a cyclic feedback loop** that re-optimizes until load matches capacity
+
+### Why It Exists
+
+Every explanation has a cognitive cost. Too many steps at once → overload. Too few → stagnation. The optimizer continuously enforces **Explanation Complexity ≈ User Capacity**, preventing both overload and underload.
+
+### System Architecture (LangGraph Nodes + Flow)
+
+```
+START → Explanation Analyzer → User State Tracker → Load Estimator
+→ Control Engine → Granularity Controller → Explanation Restructurer
+→ Feedback Loop Manager → (loop back to Load Estimator OR END)
+```
+
+All 7 nodes operate as pure functions on a shared `CognitiveLoadState` via LangGraph `StateGraph`. The graph is **cyclic** — the Feedback Loop Manager conditionally routes back to the Load Estimator for re-optimization (up to 3 iterations).
+
+| Node | Name | Responsibility |
+|------|------|---------------|
+| 1 | Explanation Analyzer | Breaks explanation into steps, extracts concepts, identifies abstraction levels |
+| 2 | User State Tracker | Loads/initializes the dynamic user cognitive profile |
+| 3 | Load Estimator | Computes cognitive load metrics (step density, concept gap, memory demand) |
+| 4 | Control Engine | Compares load vs capacity, decides adaptation strategy (overload/optimal/underload) |
+| 5 | Granularity Controller | Adjusts step size — splits, merges, or adds checkpoints based on control decisions |
+| 6 | Explanation Restructurer | Validates and cleans restructured steps, ensures dependency consistency |
+| 7 | Feedback Loop Manager | Updates user state, determines whether to loop for further optimization |
+
+### Cognitive Load Definition
+
+Cognitive load is a measurable composite quantity derived from three dimensions:
+
+| Dimension | Definition | Measurement |
+|-----------|-----------|-------------|
+| **Step Density** | How many reasoning steps per unit of content | Steps per 100 words |
+| **Concept Gap** | How large the jump between consecutive steps | Average new concepts introduced per transition |
+| **Memory Demand** | How many elements must be held simultaneously | Max dependencies + concepts any single step requires |
+
+**Total Load** = `(step_density × 2.0) + (concept_gap × 2.5) + (memory_demand × 1.5)` (capped at 10.0)
+
+### Adaptation Logic
+
+| State | Condition | Behavior |
+|-------|-----------|----------|
+| **Overload** | load > capacity + 1.5 | Split long steps, reduce abstraction, add intermediate reasoning |
+| **Underload** | load < capacity - 2.0 | Merge short steps, compress reasoning, increase abstraction |
+| **Optimal** | within range | Maintain structure, add checkpoints if borderline |
+
+Reasoning modes map to adaptation:
+- **fine-grained** → step-by-step mode (overload state)
+- **medium** → grouped reasoning (optimal state)
+- **coarse** → compressed reasoning (underload state)
+
+### Feedback Loop
+
+The user cognitive state is **dynamic and evolves** after every interaction:
+
+| Field | Updated When | Direction |
+|-------|-------------|-----------|
+| `understanding_level` | Every interaction | Decreases on overload, increases on underload |
+| `reasoning_stability` | Every interaction | Decreases on overload, increases otherwise |
+| `learning_speed` | Optimal reached | Increases when optimal state is achieved |
+| `overload_signals` | Overload detected | Increments on overload, decrements on underload |
+| `interaction_count` | Always | Increments by 1 |
+
+The feedback loop re-runs load estimation after each adaptation. It converges when either:
+- Load state becomes "optimal"
+- Maximum iterations (3) are reached
+
+### Pipeline Integration
+
+```
+User Query → Reasoning System → Explanation Generator → Cognitive Load Optimizer → Final Output
+```
+
+The optimizer sits at the end of the pipeline, between raw explanation output and the user. It receives the full explanation and reshapes it without changing content.
+
+### Cognitive Load Output Contract
+
+The `/optimize-cognitive-load` endpoint returns:
+
+```json
+{
+  "adapted_explanation": [
+    {
+      "step_id": "s1",
+      "content": "First, identify the problem type...",
+      "concepts": ["problem recognition"],
+      "abstraction_level": "concrete",
+      "depends_on": []
+    }
+  ],
+  "load_state": "optimal",
+  "control_actions": [
+    {
+      "action": "maintain",
+      "reason": "Load matches capacity — maintaining current structure"
+    }
+  ],
+  "user_state": {
+    "user_id": "default",
+    "understanding_level": 0.5,
+    "reasoning_stability": 0.52,
+    "learning_speed": 0.52,
+    "overload_signals": 0,
+    "interaction_count": 1
+  },
+  "load_metrics": {
+    "step_density": 3.33,
+    "concept_gap": 1.0,
+    "memory_demand": 2.0,
+    "total_load": 5.16
+  },
+  "reasoning_mode": "medium"
+}
+```
+
+
 ## System Architecture
 
 EviLearn is organized into 4 layers, each with a strict single responsibility:
@@ -308,7 +436,8 @@ graph TB
         VA[Verification Agent]
         ST[Stress Test Engine<br/>conditional]
         EA[Explanation Agent]
-        PL --> CE --> RA --> VA --> ST --> EA
+        CLO[Cognitive Load Optimizer<br/>cyclic feedback]
+        PL --> CE --> RA --> VA --> ST --> EA --> CLO
     end
 
     subgraph "Layer 4 — Data & Knowledge Layer"
@@ -320,6 +449,7 @@ graph TB
 
     UI <-->|REST API| API
     API --> PL
+    CLO --> API
     EA --> API
     ST --> API
     RA <--> EMB
@@ -491,6 +621,36 @@ sequenceDiagram
     FE-->>U: Reasoning graphs, strategy distributions, structural comparison, gap analysis
 ```
 
+### Cognitive Load Optimization Flow
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant FE as Frontend
+    participant API as FastAPI
+    participant CLO as Cognitive Load Optimizer
+
+    U->>FE: Submit explanation + user ID
+    FE->>API: POST /optimize-cognitive-load {explanation, user_id}
+    API->>CLO: cognitive_load_optimizer.optimize(explanation, user_id)
+
+    Note over CLO: Node 1: Analyze explanation into steps, concepts, abstraction
+    Note over CLO: Node 2: Load/initialize user cognitive state
+    Note over CLO: Node 3: Compute cognitive load (step density, concept gap, memory)
+    Note over CLO: Node 4: Compare load vs capacity → overload/optimal/underload
+    Note over CLO: Node 5: Adjust granularity (split/merge/checkpoint)
+    Note over CLO: Node 6: Restructure and validate adapted steps
+    Note over CLO: Node 7: Update user state, decide loop/end
+
+    alt Load not optimal & iterations remaining
+        Note over CLO: Loop back to Node 3 (re-estimate load)
+    end
+
+    CLO-->>API: Adapted explanation + load state + user state
+    API-->>FE: CognitiveLoadResponse
+    FE-->>U: Adapted steps, load state badges, control actions, user metrics
+```
+
 ## User Flow
 
 1. **Upload Documents** — User uploads PDF or TXT files that form the knowledge base.
@@ -500,6 +660,7 @@ sequenceDiagram
 5. **Review History** — User can browse past validation sessions with full results.
 6. **Stress Test Reasoning** — User submits a problem and student answer with confidence level. System stress-tests the reasoning for edge cases, weaknesses, and adversarial scenarios, returning a robustness score and targeted questions.
 7. **Thinking Simulation** — User submits a problem (and optionally a student answer). System simulates beginner, intermediate, and expert reasoning paths, performs structural comparison, and identifies thinking gaps.
+8. **Cognitive Load Optimization** — User submits an explanation to optimize. System analyzes cognitive load (step density, concept gaps, memory demand), compares against user capacity, and adapts presentation — splitting, merging, or adjusting abstraction in real-time with a cyclic feedback loop.
 
 ## API Endpoint Summary
 
@@ -515,6 +676,7 @@ sequenceDiagram
 | `GET` | `/history` | Get full history | — | `{sessions: [...]}` |
 | `POST` | `/evaluate-reasoning` | Stress-test reasoning robustness | `{problem, student_answer, confidence}` | `EvaluateReasoningResponse` |
 | `POST` | `/simulate-thinking` | Simulate multi-level cognitive reasoning | `{problem, student_answer?}` | `ThinkingSimulationResponse` |
+| `POST` | `/optimize-cognitive-load` | Optimize explanation cognitive load | `{explanation, user_id?}` | `CognitiveLoadResponse` |
 
 ## Output Contract
 
@@ -753,6 +915,7 @@ The frontend starts on `http://localhost:5173` and proxies `/api` requests to th
 8. **All data is strictly typed.** Pydantic models validate every claim before storage. No untyped dicts in core flow.
 9. **Output is validated before persistence.** Pipeline output is validated via Pydantic schemas BEFORE inserting into the database.
 10. **Thinking Simulation is graph-based.** The Thinking Simulation Engine uses LangGraph StateGraph with 7 nodes, conditional edges, and shared state — no sequential function chaining.
+11. **Cognitive Load Optimizer is cyclic.** The Cognitive Load Optimizer uses LangGraph StateGraph with 7 nodes and a cyclic feedback loop that re-optimizes until load matches user capacity. It never changes explanation content — only structure and pacing.
 
 ## Limitations
 
@@ -779,6 +942,7 @@ evilearn/
 │   │   ├── README.md                  # AI Engine documentation
 │   │   ├── pipeline.py                # LangGraph graph-native agents + pipeline
 │   │   ├── thinking_engine.py         # Thinking Simulation Engine (LangGraph)
+│   │   ├── cognitive_load_optimizer.py# Cognitive Load Optimizer (LangGraph, cyclic)
 │   │   └── stress_test_agent/         # Knowledge Stress-Test Engine
 │   │       ├── stress_test_agent.py   # Main orchestrator
 │   │       ├── concept_extractor.py   # Extract key concepts from claims
@@ -815,5 +979,7 @@ evilearn/
             ├── StressTestWorkspace.jsx# Stress test input form
             ├── StressTestResults.jsx  # Stress test results display
             ├── ThinkingSimulationWorkspace.jsx # Thinking simulation input
-            └── ThinkingSimulationResults.jsx   # Thinking simulation results
+│             ├── ThinkingSimulationResults.jsx   # Thinking simulation results
+│             ├── CognitiveLoadWorkspace.jsx      # Cognitive load optimizer input
+│             └── CognitiveLoadResults.jsx        # Cognitive load optimizer results
 ```

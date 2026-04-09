@@ -403,3 +403,78 @@ class ThinkingSimulationResponse(BaseModel):
     student_graph: StudentGraph = StudentGraph()
     validation_passed: bool = True
     validation_notes: list[str] = []
+
+
+# --- Cognitive Load Optimizer Schemas ---
+
+class CognitiveLoadRequest(BaseModel):
+    """Request body for cognitive load optimization."""
+    explanation: str = Field(..., min_length=1, description="Raw explanation text to optimize.")
+    user_id: str = Field(default="default", description="User identifier for state tracking.")
+
+
+class ExplanationStep(BaseModel):
+    """A single step in a structured explanation."""
+    step_id: str
+    content: str
+    concepts: list[str] = []
+    abstraction_level: str = "concrete"
+    depends_on: list[str] = []
+
+    @field_validator("abstraction_level")
+    @classmethod
+    def validate_abstraction_level(cls, v: str) -> str:
+        allowed = {"concrete", "semi-abstract", "abstract"}
+        if v not in allowed:
+            raise ValueError(f"Invalid abstraction_level '{v}'. Must be one of: {allowed}")
+        return v
+
+
+class UserCognitiveState(BaseModel):
+    """Dynamic user cognitive state that evolves over interactions."""
+    user_id: str = "default"
+    understanding_level: float = Field(default=0.5, ge=0.0, le=1.0)
+    reasoning_stability: float = Field(default=0.5, ge=0.0, le=1.0)
+    learning_speed: float = Field(default=0.5, ge=0.0, le=1.0)
+    overload_signals: int = Field(default=0, ge=0)
+    interaction_count: int = Field(default=0, ge=0)
+
+
+class CognitiveLoadMetrics(BaseModel):
+    """Measured cognitive load of an explanation."""
+    step_density: float = Field(default=0.0, ge=0.0, description="Steps per unit of content.")
+    concept_gap: float = Field(default=0.0, ge=0.0, description="Average conceptual jump between steps.")
+    memory_demand: float = Field(default=0.0, ge=0.0, description="Elements to hold simultaneously.")
+    total_load: float = Field(default=0.0, ge=0.0, description="Composite cognitive load score.")
+
+
+class ControlAction(BaseModel):
+    """A single adaptation action taken by the optimizer."""
+    action: str
+    reason: str
+
+
+class CognitiveLoadResponse(BaseModel):
+    """Response for cognitive load optimization."""
+    adapted_explanation: list[ExplanationStep] = []
+    load_state: str = "optimal"
+    control_actions: list[ControlAction] = []
+    user_state: UserCognitiveState = UserCognitiveState()
+    load_metrics: CognitiveLoadMetrics = CognitiveLoadMetrics()
+    reasoning_mode: str = "medium"
+
+    @field_validator("load_state")
+    @classmethod
+    def validate_load_state(cls, v: str) -> str:
+        allowed = {"overload", "optimal", "underload"}
+        if v not in allowed:
+            raise ValueError(f"Invalid load_state '{v}'. Must be one of: {allowed}")
+        return v
+
+    @field_validator("reasoning_mode")
+    @classmethod
+    def validate_reasoning_mode(cls, v: str) -> str:
+        allowed = {"fine-grained", "medium", "coarse"}
+        if v not in allowed:
+            raise ValueError(f"Invalid reasoning_mode '{v}'. Must be one of: {allowed}")
+        return v

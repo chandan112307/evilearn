@@ -45,6 +45,12 @@ from .schemas import (
     StructuralComparison,
     StudentGraph,
     GapItem,
+    CognitiveLoadRequest,
+    CognitiveLoadResponse,
+    ExplanationStep,
+    UserCognitiveState,
+    CognitiveLoadMetrics,
+    ControlAction,
 )
 from .data_layer.document_processor import DocumentProcessor
 from .data_layer.chunker import TextChunker
@@ -53,6 +59,7 @@ from .data_layer.database import Database
 from .data_layer.embedding_service import EmbeddingService
 from .ai_engine.pipeline import ValidationPipeline
 from .ai_engine.thinking_engine import ThinkingSimulationEngine
+from .ai_engine.cognitive_load_optimizer import CognitiveLoadOptimizer
 
 
 # --- Initialize Application ---
@@ -106,6 +113,10 @@ pipeline = ValidationPipeline(
 )
 
 thinking_engine = ThinkingSimulationEngine(
+    llm_client=llm_client,
+)
+
+cognitive_load_optimizer = CognitiveLoadOptimizer(
     llm_client=llm_client,
 )
 
@@ -513,6 +524,76 @@ def simulate_thinking(request: ThinkingSimulationRequest):
             student_graph=student_graph,
             validation_passed=result.get("validation_passed", True),
             validation_notes=result.get("validation_notes", []),
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Cognitive Load Optimizer Endpoint ---
+
+@app.post("/optimize-cognitive-load", response_model=CognitiveLoadResponse)
+def optimize_cognitive_load(request: CognitiveLoadRequest):
+    """Optimize explanation cognitive load for a user.
+
+    Analyzes explanation structure, estimates cognitive load, compares
+    against user capacity, and adapts presentation accordingly.
+    Uses a cyclic LangGraph to iteratively refine until load matches capacity.
+
+    This does NOT change explanation content — only structure and pacing.
+    """
+    try:
+        result = cognitive_load_optimizer.optimize(
+            explanation=request.explanation,
+            user_id=request.user_id,
+        )
+
+        adapted_steps = [
+            ExplanationStep(
+                step_id=s.get("step_id", ""),
+                content=s.get("content", ""),
+                concepts=s.get("concepts", []),
+                abstraction_level=s.get("abstraction_level", "concrete"),
+                depends_on=s.get("depends_on", []),
+            )
+            for s in result.get("adapted_explanation", [])
+        ]
+
+        control_actions = [
+            ControlAction(
+                action=a.get("action", ""),
+                reason=a.get("reason", ""),
+            )
+            for a in result.get("control_actions", [])
+        ]
+
+        user_state_raw = result.get("user_state", {})
+        user_state = UserCognitiveState(
+            user_id=user_state_raw.get("user_id", "default"),
+            understanding_level=user_state_raw.get("understanding_level", 0.5),
+            reasoning_stability=user_state_raw.get("reasoning_stability", 0.5),
+            learning_speed=user_state_raw.get("learning_speed", 0.5),
+            overload_signals=user_state_raw.get("overload_signals", 0),
+            interaction_count=user_state_raw.get("interaction_count", 0),
+        )
+
+        metrics_raw = result.get("load_metrics", {})
+        load_metrics = CognitiveLoadMetrics(
+            step_density=metrics_raw.get("step_density", 0.0),
+            concept_gap=metrics_raw.get("concept_gap", 0.0),
+            memory_demand=metrics_raw.get("memory_demand", 0.0),
+            total_load=metrics_raw.get("total_load", 0.0),
+        )
+
+        return CognitiveLoadResponse(
+            adapted_explanation=adapted_steps,
+            load_state=result.get("load_state", "optimal"),
+            control_actions=control_actions,
+            user_state=user_state,
+            load_metrics=load_metrics,
+            reasoning_mode=result.get("reasoning_mode", "medium"),
         )
 
     except ValueError as e:
