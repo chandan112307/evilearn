@@ -188,3 +188,41 @@ class ErrorResponse(BaseModel):
     """Standard error response."""
     error: str
     detail: str = ""
+
+
+# --- Stress Test Schemas ---
+
+class EvaluateReasoningRequest(BaseModel):
+    """Request body for reasoning stress test."""
+    problem: str = Field(default="", description="Problem statement (optional).")
+    student_answer: str = Field(..., min_length=1, description="Student's answer to stress-test.")
+    confidence: int = Field(default=50, ge=0, le=100, description="Student's confidence level (0-100).")
+
+
+class WeaknessItem(BaseModel):
+    """A single reasoning weakness."""
+    type: str
+    detail: str
+
+
+class RobustnessSummary(BaseModel):
+    """Robustness evaluation summary."""
+    robustness_score: float = Field(ge=0.0, le=1.0)
+    summary: str
+    level: str
+
+    @field_validator("level")
+    @classmethod
+    def validate_level(cls, v: str) -> str:
+        allowed = {"low", "medium", "high", "unknown"}
+        if v not in allowed:
+            raise ValueError(f"Invalid level '{v}'. Must be one of: {allowed}")
+        return v
+
+
+class EvaluateReasoningResponse(BaseModel):
+    """Response for reasoning stress test."""
+    stress_test_results: list[str] = []
+    weakness_summary: list[WeaknessItem] = []
+    robustness_summary: RobustnessSummary
+    adversarial_questions: list[str] = []

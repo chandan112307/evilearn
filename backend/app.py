@@ -29,6 +29,10 @@ from .schemas import (
     ClaimResult,
     EvidenceItem,
     ErrorResponse,
+    EvaluateReasoningRequest,
+    EvaluateReasoningResponse,
+    WeaknessItem,
+    RobustnessSummary,
 )
 from .data_layer.document_processor import DocumentProcessor
 from .data_layer.chunker import TextChunker
@@ -270,6 +274,50 @@ def process_input(request: ProcessInputRequest):
             session_id=session_id,
             input_type=result.get("input_type", "answer"),
             claims=claim_results,
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Stress Test Endpoint ---
+
+@app.post("/evaluate-reasoning", response_model=EvaluateReasoningResponse)
+def evaluate_reasoning(request: EvaluateReasoningRequest):
+    """Stress-test student reasoning to expose weaknesses and fragility.
+
+    This is NOT a tutoring endpoint. It actively tries to break the
+    student's reasoning by generating adversarial scenarios, detecting
+    failure points, and producing targeted challenge questions.
+
+    Executes: Input → Claims → Retrieval → Verification → Stress Test
+    """
+    try:
+        result = pipeline.evaluate_reasoning(
+            student_answer=request.student_answer,
+            problem=request.problem,
+        )
+
+        # Validate output via Pydantic
+        weakness_items = [
+            WeaknessItem(type=w.get("type", ""), detail=w.get("detail", ""))
+            for w in result.get("weakness_summary", [])
+        ]
+
+        robustness_raw = result.get("robustness_summary", {})
+        robustness = RobustnessSummary(
+            robustness_score=robustness_raw.get("robustness_score", 0.0),
+            summary=robustness_raw.get("summary", ""),
+            level=robustness_raw.get("level", "unknown"),
+        )
+
+        return EvaluateReasoningResponse(
+            stress_test_results=result.get("stress_test_results", []),
+            weakness_summary=weakness_items,
+            robustness_summary=robustness,
+            adversarial_questions=result.get("adversarial_questions", []),
         )
 
     except ValueError as e:

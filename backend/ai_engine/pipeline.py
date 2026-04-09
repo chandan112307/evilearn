@@ -33,6 +33,7 @@ from ..schemas import (
     VerificationResult,
     FinalClaimResult,
 )
+from .stress_test_agent import run_stress_test
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +62,11 @@ class PipelineState(TypedDict):
     verification_results: list[dict]         # written by verifier (VerificationResult dicts)
     final_results: list[dict]                # written by explainer (FinalClaimResult dicts)
     error: Optional[str]
+
+    # Stress test fields
+    problem: str                             # optional problem context
+    run_stress_test: bool                    # flag to enable stress testing
+    stress_test_output: dict                 # written by stress_test_node
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +332,45 @@ def verifier_node(state: PipelineState) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Node 5: Explainer — generate human-readable explanations
+# Node 5: Stress Test — break student reasoning under adversarial conditions
+# ---------------------------------------------------------------------------
+
+def stress_test_node(state: PipelineState) -> dict:
+    """Run the Knowledge Stress-Test Engine on verified claims.
+
+    This is NOT a tutoring feature. It actively tries to break the
+    student's reasoning by generating adversarial scenarios, detecting
+    failures, and producing targeted challenge questions.
+
+    Reads: raw_input, problem, claims, verification_results, _llm_client
+    Writes: stress_test_output
+    """
+    student_answer = state["raw_input"]
+    claims = state.get("claims", [])
+    verification_results = state.get("verification_results", [])
+    problem = state.get("problem", "")
+    llm_client = state.get("_llm_client")
+
+    result = run_stress_test(
+        student_answer=student_answer,
+        claims=claims,
+        verification_results=verification_results,
+        problem=problem,
+        llm_client=llm_client,
+    )
+
+    return {"stress_test_output": result}
+
+
+def _check_stress_test(state: PipelineState) -> str:
+    """Route to stress_test if enabled, else skip to explainer."""
+    if state.get("run_stress_test"):
+        return "run_stress_test"
+    return "skip"
+
+
+# ---------------------------------------------------------------------------
+# Node 6: Explainer — generate human-readable explanations
 # ---------------------------------------------------------------------------
 
 def explainer_node(state: PipelineState) -> dict:
@@ -447,7 +491,11 @@ def build_validation_graph():
     """Build and compile the LangGraph StateGraph.
 
     Returns a compiled graph with strict sequential execution:
-        START → planner → claim_extractor → [retriever → verifier → explainer] → END
+        START → planner → claim_extractor → [retriever → verifier
+        → (stress_test)? → explainer] → END
+
+    The stress_test node is conditional — it runs only when
+    run_stress_test is True in state.
 
     All nodes are pure functions. No classes. No wrappers.
     """
@@ -458,6 +506,7 @@ def build_validation_graph():
     graph.add_node("claim_extractor", claim_extractor_node)
     graph.add_node("retriever", retriever_node)
     graph.add_node("verifier", verifier_node)
+    graph.add_node("stress_test", stress_test_node)
     graph.add_node("explainer", explainer_node)
 
     # Strict sequential edges (NON-NEGOTIABLE order)
@@ -469,7 +518,13 @@ def build_validation_graph():
         {"has_claims": "retriever", "no_claims": END},
     )
     graph.add_edge("retriever", "verifier")
-    graph.add_edge("verifier", "explainer")
+    # After verifier, conditionally route to stress_test or explainer
+    graph.add_conditional_edges(
+        "verifier",
+        _check_stress_test,
+        {"run_stress_test": "stress_test", "skip": "explainer"},
+    )
+    graph.add_edge("stress_test", "explainer")
     graph.add_edge("explainer", END)
 
     return graph.compile()
@@ -525,6 +580,9 @@ class ValidationPipeline:
             "verification_results": [],
             "final_results": [],
             "error": None,
+            "problem": "",
+            "run_stress_test": False,
+            "stress_test_output": {},
         }
 
         final_state = self.graph.invoke(initial_state)
@@ -547,4 +605,49 @@ class ValidationPipeline:
             "input_type": final_state.get("input_type", "answer"),
             "claims": validated_claims,
         }
+
+    def evaluate_reasoning(
+        self, student_answer: str, problem: str = ""
+    ) -> dict:
+        """Execute the pipeline with stress testing enabled.
+
+        Runs the full pipeline (planner → claim_extractor → retriever
+        → verifier → stress_test → explainer) and returns the stress
+        test output.
+
+        Args:
+            student_answer: The student's answer to stress-test.
+            problem: Optional problem statement for context.
+
+        Returns:
+            Dict with stress_test_results, weakness_summary,
+            robustness_summary, adversarial_questions.
+
+        Raises:
+            ValueError: If input is invalid.
+            RuntimeError: If a pipeline stage fails.
+        """
+        if not student_answer or not student_answer.strip():
+            raise ValueError("Student answer is empty.")
+
+        initial_state: PipelineState = {
+            "_vector_store": self.vector_store,
+            "_llm_client": self.llm_client,
+            "_embedding_service": self.embedding_service,
+            "raw_input": student_answer,
+            "input_type": "",
+            "pipeline_decision": "",
+            "claims": [],
+            "evidence_map": {},
+            "verification_results": [],
+            "final_results": [],
+            "error": None,
+            "problem": problem,
+            "run_stress_test": True,
+            "stress_test_output": {},
+        }
+
+        final_state = self.graph.invoke(initial_state)
+
+        return final_state.get("stress_test_output", {})
 
