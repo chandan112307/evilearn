@@ -365,24 +365,25 @@ def granularity_controller_node(state: CognitiveLoadState) -> dict:
                 # Find nearest sentence boundary
                 split_idx = mid
                 for j in range(mid, min(mid + 10, len(words))):
-                    if words[j - 1].endswith(('.', '!', '?', ',', ';')):
+                    if j > 0 and words[j - 1].endswith(('.', '!', '?', ',', ';')):
                         split_idx = j
                         break
 
                 part1 = " ".join(words[:split_idx])
                 part2 = " ".join(words[split_idx:])
 
+                concepts = s.get("concepts", [])
                 step1 = ExplanationStep(
                     step_id=f"{s['step_id']}a",
                     content=part1,
-                    concepts=s.get("concepts", [])[:len(s.get("concepts", [])) // 2 + 1],
+                    concepts=concepts[:len(concepts) // 2 + 1],
                     abstraction_level="concrete",
                     depends_on=s.get("depends_on", []),
                 )
                 step2 = ExplanationStep(
                     step_id=f"{s['step_id']}b",
                     content=part2,
-                    concepts=s.get("concepts", [])[len(s.get("concepts", [])) // 2 + 1:],
+                    concepts=concepts[len(concepts) // 2 + 1:],
                     abstraction_level=s.get("abstraction_level", "concrete"),
                     depends_on=[f"{s['step_id']}a"],
                 )
