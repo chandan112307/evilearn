@@ -226,3 +226,72 @@ class EvaluateReasoningResponse(BaseModel):
     weakness_summary: list[WeaknessItem] = []
     robustness_summary: RobustnessSummary
     adversarial_questions: list[str] = []
+
+
+# --- Thinking Simulation Engine Schemas ---
+
+class ThinkingSimulationRequest(BaseModel):
+    """Request body for thinking simulation."""
+    problem: str = Field(..., min_length=1, description="Problem or question to simulate reasoning for.")
+    student_answer: str = Field(default="", description="Optional student answer/reasoning to compare.")
+
+
+class CognitiveProfile(BaseModel):
+    """A single cognitive reasoning profile."""
+    level: str
+    description: str
+    characteristics: list[str] = []
+
+
+class ReasoningStep(BaseModel):
+    """A single step in a reasoning path."""
+    step_id: str
+    operation_type: str
+    concept_used: str
+    input_value: str = ""
+    output_value: str = ""
+    reason: str = ""
+
+
+class ReasoningPath(BaseModel):
+    """A complete reasoning path for one cognitive level."""
+    level: str
+    steps: list[ReasoningStep] = []
+    metadata: dict = {}
+
+
+class StrategyTag(BaseModel):
+    """Strategy tags for a reasoning path."""
+    level: str
+    tags: list[str] = []
+
+
+class ComparisonResult(BaseModel):
+    """Comparison analysis across reasoning paths."""
+    structural: dict = {}
+    strategy: dict = {}
+    abstraction: dict = {}
+
+
+class GapItem(BaseModel):
+    """A single thinking gap insight."""
+    insight: str
+    severity: str = "info"
+
+    @field_validator("severity")
+    @classmethod
+    def validate_severity(cls, v: str) -> str:
+        allowed = {"info", "warning", "critical"}
+        if v not in allowed:
+            raise ValueError(f"Invalid severity '{v}'. Must be one of: {allowed}")
+        return v
+
+
+class ThinkingSimulationResponse(BaseModel):
+    """Response for thinking simulation."""
+    cognitive_profiles: list[CognitiveProfile] = []
+    reasoning_paths: list[ReasoningPath] = []
+    strategy_tags: list[StrategyTag] = []
+    comparison_results: ComparisonResult = ComparisonResult()
+    gap_analysis: list[GapItem] = []
+    student_comparison: dict = {}

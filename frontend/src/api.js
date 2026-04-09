@@ -84,3 +84,19 @@ export async function evaluateReasoning(studentAnswer, problem = '', confidence 
   }
   return res.json();
 }
+
+export async function simulateThinking(problem, studentAnswer = '') {
+  const res = await fetch(`${API_BASE}/simulate-thinking`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      problem,
+      student_answer: studentAnswer,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Thinking simulation failed');
+  }
+  return res.json();
+}

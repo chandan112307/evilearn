@@ -33,6 +33,14 @@ from .schemas import (
     EvaluateReasoningResponse,
     WeaknessItem,
     RobustnessSummary,
+    ThinkingSimulationRequest,
+    ThinkingSimulationResponse,
+    CognitiveProfile,
+    ReasoningPath,
+    ReasoningStep,
+    StrategyTag,
+    ComparisonResult,
+    GapItem,
 )
 from .data_layer.document_processor import DocumentProcessor
 from .data_layer.chunker import TextChunker
@@ -40,6 +48,7 @@ from .data_layer.vector_store import VectorStore
 from .data_layer.database import Database
 from .data_layer.embedding_service import EmbeddingService
 from .ai_engine.pipeline import ValidationPipeline
+from .ai_engine.thinking_engine import ThinkingSimulationEngine
 
 
 # --- Initialize Application ---
@@ -90,6 +99,10 @@ pipeline = ValidationPipeline(
     vector_store=vector_store,
     llm_client=llm_client,
     embedding_service=embedding_service,
+)
+
+thinking_engine = ThinkingSimulationEngine(
+    llm_client=llm_client,
 )
 
 
@@ -318,6 +331,96 @@ def evaluate_reasoning(request: EvaluateReasoningRequest):
             weakness_summary=weakness_items,
             robustness_summary=robustness,
             adversarial_questions=result.get("adversarial_questions", []),
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Thinking Simulation Endpoint ---
+
+@app.post("/simulate-thinking", response_model=ThinkingSimulationResponse)
+def simulate_thinking(request: ThinkingSimulationRequest):
+    """Simulate multi-level cognitive reasoning for a problem.
+
+    This is NOT a problem-solving endpoint. It simulates how different
+    cognitive levels (beginner, intermediate, expert) would reason about
+    a problem, structurally analyzes the reasoning paths, and identifies
+    gaps in the student's thinking if a student answer is provided.
+
+    Executes: Cognitive Profiles → Parallel Reasoning → Structuring
+    → Strategy Tagging → Comparative Analysis → Student Comparison
+    (conditional) → Gap Detection
+    """
+    try:
+        result = thinking_engine.simulate(
+            problem=request.problem,
+            student_answer=request.student_answer,
+        )
+
+        # Validate output via Pydantic
+        cognitive_profiles = [
+            CognitiveProfile(
+                level=p.get("level", "unknown"),
+                description=p.get("description", ""),
+                characteristics=p.get("characteristics", []),
+            )
+            for p in result.get("cognitive_profiles", [])
+        ]
+
+        reasoning_paths = []
+        for rp in result.get("reasoning_paths", []):
+            steps = [
+                ReasoningStep(
+                    step_id=s.get("step_id", ""),
+                    operation_type=s.get("operation_type", ""),
+                    concept_used=s.get("concept_used", ""),
+                    input_value=s.get("input_value", ""),
+                    output_value=s.get("output_value", ""),
+                    reason=s.get("reason", ""),
+                )
+                for s in rp.get("steps", [])
+            ]
+            reasoning_paths.append(
+                ReasoningPath(
+                    level=rp.get("level", "unknown"),
+                    steps=steps,
+                    metadata=rp.get("metadata", {}),
+                )
+            )
+
+        strategy_tags = [
+            StrategyTag(
+                level=st.get("level", "unknown"),
+                tags=st.get("tags", []),
+            )
+            for st in result.get("strategy_tags", [])
+        ]
+
+        comparison_raw = result.get("comparison_results", {})
+        comparison_results = ComparisonResult(
+            structural=comparison_raw.get("structural", {}),
+            strategy=comparison_raw.get("strategy", {}),
+            abstraction=comparison_raw.get("abstraction", {}),
+        )
+
+        gap_analysis = [
+            GapItem(
+                insight=g.get("insight", ""),
+                severity=g.get("severity", "info"),
+            )
+            for g in result.get("gap_analysis", [])
+        ]
+
+        return ThinkingSimulationResponse(
+            cognitive_profiles=cognitive_profiles,
+            reasoning_paths=reasoning_paths,
+            strategy_tags=strategy_tags,
+            comparison_results=comparison_results,
+            gap_analysis=gap_analysis,
+            student_comparison=result.get("student_comparison", {}),
         )
 
     except ValueError as e:
